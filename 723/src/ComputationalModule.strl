@@ -1,0 +1,18 @@
+module ComputationalModule:
+
+input QuickAccel, QuickDecel, Set;
+input Speed : float;
+input Accel : float;
+input CruiseState := 1 : integer;
+
+output CruiseSpeed := 0.0f : float; % Hapus output, pakai signal!
+output ThrottleCmd := 0.0f : float; % Hapus output, pakai signal!
+
+signal ManageCruiseSpeed, LocalThrottleCmd, LocalCruiseSpeed in
+
+    run CruiseSpeedModule
+    ||
+    run ThrottleControlModule
+
+end signal
+end module

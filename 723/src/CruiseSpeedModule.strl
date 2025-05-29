@@ -1,0 +1,23 @@
+module CruiseSpeedModule:
+
+input Set;
+input QuickAccel;
+input QuickDecel;
+input Speed : float;
+input CruiseState : integer;
+
+output ManageCruiseSpeed; % Hapus output, pakai signal!
+output CruiseSpeed := 0.0f : float; % Hapus output, pakai signal!
+
+constant SpeedInc = 2.5f : float;
+constant SpeedMax = 150.0f : float;
+constant SpeedMin = 30.0f : float;
+
+signal SetSpeed, FirstOn, AccelSpeed, DecelSpeed, TargetCruiseSpeed in
+
+    run CruiseSpeedControlFSM
+    ||
+    run CruiseSpeedResolver
+
+end signal
+end module

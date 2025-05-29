@@ -1,0 +1,29 @@
+module CruiseSpeedResolver:
+
+input Speed : float;
+input CruiseState : integer;
+input SetSpeed, AccelSpeed, DecelSpeed;
+
+output CruiseSpeed : float;
+
+var cruiseTarget := 0.0f : float in
+    loop
+        present SetSpeed then
+            cruiseTarget := Speed;
+        elsif present AccelSpeed then
+            cruiseTarget := cruiseTarget + 2.5f;
+        elsif present DecelSpeed then
+            cruiseTarget := cruiseTarget - 2.5f;
+        end present;
+        % Jaga cruiseTarget tetap dalam batas
+        if cruiseTarget > 150.0f then
+            cruiseTarget := 150.0f;
+        elsif cruiseTarget < 30.0f then
+            cruiseTarget := 30.0f;
+        end if;
+        emit CruiseSpeed(cruiseTarget);
+        pause;
+    end loop;
+end var
+
+end module

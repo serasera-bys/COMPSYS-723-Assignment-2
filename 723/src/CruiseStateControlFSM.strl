@@ -1,0 +1,26 @@
+module CruiseStateControlFSM:
+
+input On, Off, Resume, Set, QuickAccel, QuickDecel;
+input Accel : float;
+input Brake : float;
+input Speed : float;
+
+output CruiseState : integer;
+
+var state := 0 : integer in
+    loop
+        present Off then
+            state := 0;
+        elsif present On then
+            state := 1;
+        elsif present Brake then
+            state := 2;
+        elsif present Resume then
+            state := 1;
+        end present;
+        emit CruiseState(state);
+        pause;
+    end loop;
+end var
+
+end module

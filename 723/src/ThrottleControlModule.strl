@@ -1,0 +1,19 @@
+module ThrottleControlModule:
+
+input Accel : float;
+input CruiseState : integer;
+input CruiseSpeed : float;
+input Speed : float;
+
+output ThrottleCmd : float; % Hapus output! Ganti signal ThrottleCmd di parent!
+
+signal ResetPI, UseAuto, LocalThrottleCmd in
+
+    % Resolver: menentukan mode auto/manual throttle
+    run ThrottleResolver
+    ||
+    % FSM kontrol throttle (misal PI/PID logic)
+    run ThrottleControlFSM
+
+end signal
+end module
