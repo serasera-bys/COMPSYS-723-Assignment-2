@@ -1,0 +1,257 @@
+module CruiseControl:
+
+% Main Cruise Control Module
+% Integrates all submodules: state controller, speed controller, throttle controller, pedal & speed checks.
+
+%Inputs
+input SignalOn;
+input SignalOff;
+input SignalResume;
+input SignalSet;
+input SignalQuickAccel;
+input SignalQuickDecel;
+input PedalAccel : float;
+input PedalBrake : float;
+input VehicleSpeed : float;
+
+%Outputs
+output CurrentCruiseSpeed : float;
+output ThrottleCommand : float;
+output CruiseControlState : integer; % 0 = OFF; 1 = ON; 2 = STDBY; 3 = DISABLE;
+
+%Internal Signals
+signal IsSpeedWithinLimit in
+signal IsAccelPressed in
+signal IsBrakePressed in
+
+run SpeedLimitCheck [
+	signal VehicleSpeed/Speed;
+	signal IsSpeedWithinLimit/WithinSpeedLimit
+]
+||
+run CruiseStateController [
+    signal SignalOn/On;
+    signal SignalOff/Off;
+    signal SignalResume/Resume;
+    signal IsAccelPressed/AccelPressed;
+    signal IsBrakePressed/BrakePressed;
+    signal IsSpeedWithinLimit/WithinSpeedLimit
+]
+||
+run BrakeCheck [
+    signal PedalBrake/Brake;
+    signal IsBrakePressed/BrakePressed
+]
+||
+run AccelCheck [
+    signal PedalAccel/Accel;
+    signal IsAccelPressed/AccelPressed
+]
+||
+run CruiseSpeedController [
+    signal CruiseControlState/CruiseState;
+    signal SignalQuickAccel/QuickAccel;
+    signal SignalQuickDecel/QuickDecel;
+    signal SignalSet/Set;
+    signal VehicleSpeed/Speed;
+    signal CurrentCruiseSpeed/CruiseSpeed
+]
+||
+run ThrottleController [
+    signal CruiseControlState/CruiseState;
+    signal CurrentCruiseSpeed/CruiseSpeed;
+    signal PedalAccel/Accel;
+    signal VehicleSpeed/Speed
+]
+
+end signal;
+end signal;
+end signal;
+end module
+
+% -----------------------------------------
+% Module to determine Cruise Controller State
+module CruiseStateController:
+
+%Inputs
+input On;
+input Off;
+input Resume;
+input AccelPressed;
+input BrakePressed;
+input WithinSpeedLimit;
+
+%Outputs
+output CruiseState : integer; % 1 = OFF; 2 = ON; 3 = STDBY; 4 = DISABLE;
+
+var state := 1 : integer in
+loop
+    emit CruiseState(state);
+    await tick;
+    if state = 1 then
+        present (On and not(Off) and WithinSpeedLimit) then
+            state := 2;            
+        end present;
+
+    elsif state = 2 then
+        present (Off) then
+            state := 1;
+        end present;
+        present (BrakePressed and not(Off)) then
+            state := 3;
+        end present;
+        present ((AccelPressed or not(WithinSpeedLimit)) and not(Off) and not(BrakePressed)) then
+            state := 4;
+        end present;
+
+    elsif state = 3 then
+        present (Off) then
+            state := 1;
+        end present;
+        present (Resume and WithinSpeedLimit and not(BrakePressed) and not(AccelPressed) and not(Off)) then
+            state := 2;
+        end present;
+        present (Resume and WithinSpeedLimit and not(BrakePressed) and AccelPressed and not(Off)) then
+            state := 4;
+        end present;
+
+    elsif state = 4 then
+        present (Off) then
+            state := 1;
+        end present;
+        present (not(AccelPressed) and WithinSpeedLimit and not(Off)) then
+            state := 2;
+        end present;
+    end if;
+
+end loop;
+end var;
+end module
+
+% -----------------------------------------
+% Module to determine cruise speed
+module CruiseSpeedController:
+
+%Inputs
+input CruiseState : integer;
+input QuickAccel;
+input QuickDecel;
+input Set;
+input Speed : float;
+
+%Outputs
+output CruiseSpeed : float;
+
+constant SpeedMin = 30.0f : float;
+constant SpeedMax = 150.0f : float;
+constant SpeedInc = 2.5f : float;
+
+var CurrentSpeed := 0.0f : float in
+loop
+    emit CruiseSpeed(CurrentSpeed);
+    await tick;
+    
+    if (?CruiseState  = 1) then
+        CurrentSpeed := 0.0f;
+    else
+        if (?CruiseState = 2 and pre(?CruiseState) = 1) then
+            CurrentSpeed := ?Speed;
+        end if;        
+        present (Set) then
+            CurrentSpeed := ?Speed;
+        end present;
+        present (QuickDecel and not(Set)) then
+            if (CurrentSpeed - SpeedInc > SpeedMin) then
+                CurrentSpeed := CurrentSpeed - SpeedInc;
+            else
+                CurrentSpeed := SpeedMin;
+            end if;
+        end present;
+        present (QuickAccel and not(Set)) then
+            if (CurrentSpeed + SpeedInc < SpeedMax) then
+                CurrentSpeed := CurrentSpeed + SpeedInc;
+            else
+                CurrentSpeed := SpeedMax;
+            end if;
+        end present;
+    end if;
+
+end loop;
+end var;
+end module
+
+% -----------------------------------------
+% Module to regulate throttle based on output from C functions
+module ThrottleController:
+%Inputs
+input CruiseState : integer;
+input CruiseSpeed : float;
+input Accel : float;
+input Speed : float;
+
+output ThrottleCmd : float;
+
+function regulateThrottle(boolean, float, float) : float;
+
+loop
+    await tick;
+    if (?CruiseState = 2 and pre(?CruiseState) = 1) then
+        %CruiseControl is going from OFF to ON
+        emit ThrottleCmd(regulateThrottle(true, ?CruiseSpeed, ?Speed))
+    elsif (?CruiseState = 2) then
+        %CruiseControl is ON
+        emit ThrottleCmd(regulateThrottle(false , ?CruiseSpeed, ?Speed))
+    else
+        %CruiseControl is not ON
+        emit ThrottleCmd(?Accel)
+
+    end if;
+end loop;
+end module
+
+% -----------------------------------------
+% Module to check if brake is pressed
+module BrakeCheck:
+input Brake : float;
+output BrakePressed;
+constant PedalMin = 3.0f : float;
+
+loop
+    await tick;
+    if (?Brake > PedalMin) then
+        emit BrakePressed;
+    end if;
+end loop;
+end module
+
+% -----------------------------------------
+% Module to check if accelerator is pressed
+module AccelCheck:
+input Accel : float;
+output AccelPressed;
+constant PedalMin = 3.0f : float;
+
+loop
+    await tick;
+    if (?Accel > PedalMin) then
+        emit AccelPressed;
+    end if;
+end loop;
+end module
+
+% -----------------------------------------
+% Module to check if speed is within SpeedMin & SpeedMax
+module SpeedLimitCheck:
+
+constant SpeedMin = 30.0f : float;
+constant SpeedMax = 150.0f : float;
+input Speed: float;
+output WithinSpeedLimit;
+
+loop
+	await tick;
+	if ((?Speed < SpeedMax) and (?Speed > SpeedMin)) then
+		emit WithinSpeedLimit;
+	end if;
+end loop
+end module
