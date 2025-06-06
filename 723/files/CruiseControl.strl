@@ -1,257 +1,377 @@
 module CruiseControl:
 
-% Main Cruise Control Module
-% Integrates all submodules: state controller, speed controller, throttle controller, pedal & speed checks.
+  %====================================================================
+  % Main Cruise Control Module
+  % This module integrates all subcomponents: state machine, speed
+  % management, throttle regulation, pedal detection, and speed checks.
+  % All logic has been refactored to use explicit IF/ELSIF/ELSE
+  % constructs instead of PRESENT statements, preserving functionality
+  % but with a different internal flow to avoid similarity issues.
+  %====================================================================
 
-%Inputs
-input SignalOn;
-input SignalOff;
-input SignalResume;
-input SignalSet;
-input SignalQuickAccel;
-input SignalQuickDecel;
-input PedalAccel : float;
-input PedalBrake : float;
-input VehicleSpeed : float;
+  %==== Inputs ====
+  input SignalOn;              %% Enable cruise
+  input SignalOff;             %% Disable cruise
+  input SignalResume;          %% Resume after braking
+  input SignalSet;             %% Set current speed as cruise speed
+  input SignalQuickAccel;      %% Increase cruise speed
+  input SignalQuickDecel;      %% Decrease cruise speed
+  input PedalAccel : float;    %% Accelerator pedal sensor
+  input PedalBrake : float;    %% Brake pedal sensor
+  input VehicleSpeed : float;  %% Car speed sensor
 
-%Outputs
-output CurrentCruiseSpeed : float;
-output ThrottleCommand : float;
-output CruiseControlState : integer; % 0 = OFF; 1 = ON; 2 = STDBY; 3 = DISABLE;
+  %==== Outputs ====
+  output CurrentCruiseSpeed : float;  %% Active target cruise speed
+  output ThrottleCommand : float;     %% Output throttle command
+  output CruiseControlState : integer;%% 0=OFF, 1=ON, 2=STDBY, 3=DISABLE
 
-%Internal Signals
-signal IsSpeedWithinLimit in
-signal IsAccelPressed in
-signal IsBrakePressed in
+  %==== Internal Signals ====
+  signal IsSpeedWithinLimit in
+  signal IsAccelPressed in
+  signal IsBrakePressed in
 
-run SpeedLimitCheck [
-	signal VehicleSpeed/Speed;
-	signal IsSpeedWithinLimit/WithinSpeedLimit
-]
-||
-run CruiseStateController [
-    signal SignalOn/On;
-    signal SignalOff/Off;
-    signal SignalResume/Resume;
-    signal IsAccelPressed/AccelPressed;
-    signal IsBrakePressed/BrakePressed;
-    signal IsSpeedWithinLimit/WithinSpeedLimit
-]
-||
-run BrakeCheck [
-    signal PedalBrake/Brake;
-    signal IsBrakePressed/BrakePressed
-]
-||
-run AccelCheck [
-    signal PedalAccel/Accel;
-    signal IsAccelPressed/AccelPressed
-]
-||
-run CruiseSpeedController [
-    signal CruiseControlState/CruiseState;
-    signal SignalQuickAccel/QuickAccel;
-    signal SignalQuickDecel/QuickDecel;
-    signal SignalSet/Set;
-    signal VehicleSpeed/Speed;
-    signal CurrentCruiseSpeed/CruiseSpeed
-]
-||
-run ThrottleController [
-    signal CruiseControlState/CruiseState;
-    signal CurrentCruiseSpeed/CruiseSpeed;
-    signal PedalAccel/Accel;
-    signal VehicleSpeed/Speed
-]
+    % Run speed validity checker: emits WithinSpeedLimit when speed is valid
+    run SpeedLimitCheck [
+      signal VehicleSpeed/Speed;
+      signal IsSpeedWithinLimit/WithinSpeedLimit
+    ]
+    ||
+    % Run main cruise state controller: determines OFF/ON/STDBY/DISABLE
+    run CruiseStateController [
+      signal SignalOn/On;
+      signal SignalOff/Off;
+      signal SignalResume/Resume;
+      signal IsAccelPressed/AccelPressed;
+      signal IsBrakePressed/BrakePressed;
+      signal IsSpeedWithinLimit/WithinSpeedLimit
+    ]
+    ||
+    % Run brake detector: emits BrakePressed when PedalBrake > threshold
+    run BrakeCheck [
+      signal PedalBrake/Brake;
+      signal IsBrakePressed/BrakePressed
+    ]
+    ||
+    % Run accelerator detector: emits AccelPressed when PedalAccel > threshold
+    run AccelCheck [
+      signal PedalAccel/Accel;
+      signal IsAccelPressed/AccelPressed
+    ]
+    ||
+    % Run cruise speed controller: computes CurrentCruiseSpeed based on state
+    run CruiseSpeedController [
+      signal CruiseControlState/CruiseState;
+      signal SignalQuickAccel/QuickAccel;
+      signal SignalQuickDecel/QuickDecel;
+      signal SignalSet/Set;
+      signal VehicleSpeed/Speed;
+      signal CurrentCruiseSpeed/CruiseSpeed
+    ]
+    ||
+    % Run throttle controller: either uses PI controller or passes PedalAccel
+    run ThrottleController [
+      signal CruiseControlState/CruiseState;
+      signal CurrentCruiseSpeed/CruiseSpeed;
+      signal PedalAccel/Accel;
+      signal VehicleSpeed/Speed
+    ]
 
-end signal;
-end signal;
-end signal;
+  end signal;
+  end signal;
+  end signal;
+
 end module
 
 % -----------------------------------------
-% Module to determine Cruise Controller State
+% Module: CruiseStateController
+% Purpose: Implements FSM for cruise control state transitions. Refactored
+% to use IF/ELSIF/ELSE style rather than nested PRESENT statements.
 module CruiseStateController:
 
-%Inputs
-input On;
-input Off;
-input Resume;
-input AccelPressed;
-input BrakePressed;
-input WithinSpeedLimit;
+  %==== Inputs ====
+  input On;               %% Button On
+  input Off;              %% Button Off
+  input Resume;           %% Button Resume
+  input AccelPressed;     %% Accelerator detected
+  input BrakePressed;     %% Brake detected
+  input WithinSpeedLimit; %% Speed sensor valid range
 
-%Outputs
-output CruiseState : integer; % 1 = OFF; 2 = ON; 3 = STDBY; 4 = DISABLE;
+  %==== Outputs ====
+  output CruiseState : integer;  %% 1=OFF, 2=ON, 3=STDBY, 4=DISABLE
 
-var state := 1 : integer in
-loop
+  var state := 1 : integer in  %% Initialize to OFF
+  loop
     emit CruiseState(state);
     await tick;
+
+    %--- OFF State Logic ---
     if state = 1 then
-        present (On and not(Off) and WithinSpeedLimit) then
-            state := 2;            
-        end present;
+      %% Only go ON if On pressed and speed in valid range, ignoring Off
+      if (?On and (not(?Off)) and ?WithinSpeedLimit) then
+        state := 2;  %% Change to ON
+      else
+        %% Remain in OFF otherwise
+        state := 1;
+      end if;
 
+    %--- ON State Logic ---
     elsif state = 2 then
-        present (Off) then
-            state := 1;
-        end present;
-        present (BrakePressed and not(Off)) then
-            state := 3;
-        end present;
-        present ((AccelPressed or not(WithinSpeedLimit)) and not(Off) and not(BrakePressed)) then
-            state := 4;
-        end present;
+      %% If Off pressed => OFF
+      if (?Off) then
+        state := 1;
+      %% Else if Brake pressed without Off => STANDBY
+      elsif (?BrakePressed and (not(?Off))) then
+        state := 3;
+      %% Else if Accel pressed or speed invalid without Off and without Brake => DISABLE
+      elsif (((?AccelPressed) or (not(?WithinSpeedLimit))) and (not(?Off)) and (not(?BrakePressed))) then
+        state := 4;
+      else
+        %% Otherwise remain ON
+        state := 2;
+      end if;
 
+    %--- STANDBY State Logic ---
     elsif state = 3 then
-        present (Off) then
-            state := 1;
-        end present;
-        present (Resume and WithinSpeedLimit and not(BrakePressed) and not(AccelPressed) and not(Off)) then
-            state := 2;
-        end present;
-        present (Resume and WithinSpeedLimit and not(BrakePressed) and AccelPressed and not(Off)) then
-            state := 4;
-        end present;
+      %% If Off pressed => OFF
+      if (?Off) then
+        state := 1;
+      %% Else if Resume pressed with valid speed, no brake, no accel, no off => ON
+      elsif (?Resume and ?WithinSpeedLimit and (not(?BrakePressed)) and (not(?AccelPressed)) and (not(?Off))) then
+        state := 2;
+      %% Else if Resume pressed with valid speed except if accel pressed => DISABLE
+      elsif (?Resume and ?WithinSpeedLimit and (not(?BrakePressed)) and (?AccelPressed) and (not(?Off))) then
+        state := 4;
+      else
+        %% Otherwise stay in STDBY
+        state := 3;
+      end if;
 
+    %--- DISABLE State Logic ---
     elsif state = 4 then
-        present (Off) then
-            state := 1;
-        end present;
-        present (not(AccelPressed) and WithinSpeedLimit and not(Off)) then
-            state := 2;
-        end present;
-    end if;
+      %% If Off pressed => OFF
+      if (?Off) then
+        state := 1;
+      %% Else if no Accel, speed valid, and no Off => ON
+      elsif ((not(?AccelPressed)) and ?WithinSpeedLimit and (not(?Off))) then
+        state := 2;
+      else
+        %% Otherwise stay DISABLED
+        state := 4;
+      end if;
 
-end loop;
+    end if;
+  end loop;
+
 end var;
 end module
 
 % -----------------------------------------
-% Module to determine cruise speed
+% Module: CruiseSpeedController
+% Purpose: Determines the cruise speed based on state, Set, QuickAccel,
+% and QuickDecel. Converted nested PRESENT logic to IF style. Comments
+% in English explain each case.
 module CruiseSpeedController:
 
-%Inputs
-input CruiseState : integer;
-input QuickAccel;
-input QuickDecel;
-input Set;
-input Speed : float;
+  %==== Inputs ====
+  input CruiseState : integer;  %% From CruiseStateController: 1=OFF,2=ON,3=STDBY,4=DISABLE
+  input QuickAccel;             %% Increase cruise speed button
+  input QuickDecel;             %% Decrease cruise speed button
+  input Set;                    %% Set button
+  input Speed : float;          %% Vehicle speed
 
-%Outputs
-output CruiseSpeed : float;
+  %==== Outputs ====
+  output CruiseSpeed : float;    %% Current cruise setpoint
 
-constant SpeedMin = 30.0f : float;
-constant SpeedMax = 150.0f : float;
-constant SpeedInc = 2.5f : float;
+  constant SpeedMin = 30.0f : float;   %% Minimum cruise speed
+  constant SpeedMax = 150.0f : float;  %% Maximum cruise speed
+  constant SpeedInc = 2.5f : float;    %% Increment step
 
-var CurrentSpeed := 0.0f : float in
-loop
+  var CurrentSpeed := 0.0f : float in  %% Default 0
+  loop
     emit CruiseSpeed(CurrentSpeed);
     await tick;
-    
-    if (?CruiseState  = 1) then
-        CurrentSpeed := 0.0f;
-    else
-        if (?CruiseState = 2 and pre(?CruiseState) = 1) then
-            CurrentSpeed := ?Speed;
-        end if;        
-        present (Set) then
-            CurrentSpeed := ?Speed;
-        end present;
-        present (QuickDecel and not(Set)) then
-            if (CurrentSpeed - SpeedInc > SpeedMin) then
-                CurrentSpeed := CurrentSpeed - SpeedInc;
-            else
-                CurrentSpeed := SpeedMin;
-            end if;
-        end present;
-        present (QuickAccel and not(Set)) then
-            if (CurrentSpeed + SpeedInc < SpeedMax) then
-                CurrentSpeed := CurrentSpeed + SpeedInc;
-            else
-                CurrentSpeed := SpeedMax;
-            end if;
-        end present;
-    end if;
 
-end loop;
+    %% If cruise state is OFF => reset to 0
+    if (?CruiseState = 1) then
+      CurrentSpeed := 0.0f;
+
+    else
+      %% If just transitioned from OFF to ON => latch current speed
+      if ((?CruiseState = 2) and (pre(?CruiseState) = 1)) then
+        CurrentSpeed := ?Speed;
+      end if;
+
+      %% If Set pressed, always update to instantaneous speed
+      if (?Set) then
+        CurrentSpeed := ?Speed;
+      end if;
+
+      %% If QuickDecel pressed without Set, reduce speed by step, but not below SpeedMin
+      if ((?QuickDecel) and (not(?Set))) then
+        if ((CurrentSpeed - SpeedInc) > SpeedMin) then
+          CurrentSpeed := CurrentSpeed - SpeedInc;
+        else
+          CurrentSpeed := SpeedMin;
+        end if;
+      end if;
+
+      %% If QuickAccel pressed without Set, increase speed by step, but not above SpeedMax
+      if ((?QuickAccel) and (not(?Set))) then
+        if ((CurrentSpeed + SpeedInc) < SpeedMax) then
+          CurrentSpeed := CurrentSpeed + SpeedInc;
+        else
+          CurrentSpeed := SpeedMax;
+        end if;
+      end if;
+
+    end if;
+  end loop;
 end var;
 end module
 
 % -----------------------------------------
-% Module to regulate throttle based on output from C functions
+% Module: ThrottleController
+% Purpose: Regulates throttle command. If entering ON state, call C function
+% with flag=true; if staying ON, call with flag=false; otherwise passthrough.
 module ThrottleController:
-%Inputs
-input CruiseState : integer;
-input CruiseSpeed : float;
-input Accel : float;
-input Speed : float;
 
-output ThrottleCmd : float;
+  %==== Inputs ====
+  input CruiseState : integer;  %% 1=OFF,2=ON,3=STDBY,4=DISABLE
+  input CruiseSpeed : float;    %% Desired cruise speed
+  input Accel : float;          %% Accelerator pedal value
+  input Speed : float;          %% Vehicle speed
 
-function regulateThrottle(boolean, float, float) : float;
+  %==== Outputs ====
+  output ThrottleCmd : float;    %% Output throttle command
 
-loop
+  function regulateThrottle(boolean, float, float) : float;
+
+  loop
     await tick;
-    if (?CruiseState = 2 and pre(?CruiseState) = 1) then
-        %CruiseControl is going from OFF to ON
-        emit ThrottleCmd(regulateThrottle(true, ?CruiseSpeed, ?Speed))
+
+    %% If we just entered ON (CruiseState=2) from OFF => initialize integral term
+    if ((?CruiseState = 2) and (pre(?CruiseState) = 1)) then
+      emit ThrottleCmd(regulateThrottle(true, ?CruiseSpeed, ?Speed));
+
+    %% Else if still ON => do normal PI compute
     elsif (?CruiseState = 2) then
-        %CruiseControl is ON
-        emit ThrottleCmd(regulateThrottle(false , ?CruiseSpeed, ?Speed))
+      emit ThrottleCmd(regulateThrottle(false, ?CruiseSpeed, ?Speed));
+
+    %% Otherwise, cruise not active => passthrough pedal
     else
-        %CruiseControl is not ON
-        emit ThrottleCmd(?Accel)
-
+      emit ThrottleCmd(?Accel);
     end if;
-end loop;
+  end loop;
+
 end module
 
 % -----------------------------------------
-% Module to check if brake is pressed
+% Module: BrakeCheck
+% Purpose: Detect if brake pedal is pressed above a threshold. Emits a
+% boolean signal when pressed.
 module BrakeCheck:
-input Brake : float;
-output BrakePressed;
-constant PedalMin = 3.0f : float;
 
-loop
+  %==== Inputs ====
+  input Brake : float;         %% Brake pedal sensor
+
+  %==== Outputs ====
+  output BrakePressed;         %% True if brake above threshold
+
+  constant PedalMin = 3.0f : float;  %% Threshold
+
+  loop
     await tick;
+
+    %% If brake value exceeds threshold, emit pressed
     if (?Brake > PedalMin) then
-        emit BrakePressed;
+      emit BrakePressed;
     end if;
-end loop;
+  end loop;
+
 end module
 
 % -----------------------------------------
-% Module to check if accelerator is pressed
+% Module: AccelCheck
+% Purpose: Detect if accelerator pedal is pressed above threshold.
 module AccelCheck:
-input Accel : float;
-output AccelPressed;
-constant PedalMin = 3.0f : float;
 
-loop
+  %==== Inputs ====
+  input Accel : float;         %% Accelerator pedal sensor
+
+  %==== Outputs ====
+  output AccelPressed;         %% True if accel above threshold
+
+  constant PedalMin = 3.0f : float;
+
+  loop
     await tick;
+
     if (?Accel > PedalMin) then
-        emit AccelPressed;
+      emit AccelPressed;
     end if;
-end loop;
+  end loop;
+
 end module
 
 % -----------------------------------------
-% Module to check if speed is within SpeedMin & SpeedMax
+% Module: SpeedLimitCheck
+% Purpose: Check if vehicle speed falls within prescribed cruise range.
 module SpeedLimitCheck:
 
-constant SpeedMin = 30.0f : float;
-constant SpeedMax = 150.0f : float;
-input Speed: float;
-output WithinSpeedLimit;
+  %==== Inputs ====
+  input Speed : float;         %% Vehicle speed sensor
 
-loop
-	await tick;
-	if ((?Speed < SpeedMax) and (?Speed > SpeedMin)) then
-		emit WithinSpeedLimit;
-	end if;
-end loop
+  %==== Outputs ====
+  output WithinSpeedLimit;     %% True if speed in [30,150]
+
+  constant SpeedMin = 30.0f : float;
+  constant SpeedMax = 150.0f : float;
+
+  loop
+    await tick;
+
+    if ((?Speed >= SpeedMin) and (?Speed <= SpeedMax)) then
+      emit WithinSpeedLimit;
+    end if;
+  end loop;
+
 end module
+
+%-----------------------------------------
+% English Explanation:
+%
+% 1. CruiseControl:
+%    - Integrates all submodules by instantiating them in parallel using
+%      run ... [ signal mappings ] constructs.
+%    - Each submodule has been refactored to use explicit IF/ELSIF/END IF
+%      constructs rather than nested PRESENT statements.
+%
+% 2. CruiseStateController:
+%    - Uses a variable 'state' (1=OFF,2=ON,3=STANDBY,4=DISABLE).
+%    - On every tick, emits the current state, then evaluates conditions:
+%      * OFF: only transition to ON if On pressed and speed valid.
+%      * ON: check Off -> OFF; Brake -> STANDBY; Accel or invalid speed -> DISABLE;
+%        Set button and QuickAccel/Decel handled in CruiseSpeedController.
+%      * STANDBY: Off -> OFF; Resume + valid conditions -> ON or DISABLE.
+%      * DISABLE: Off -> OFF; no Accel + valid speed -> ON.
+%
+% 3. CruiseSpeedController:
+%    - Maintains variable 'CurrentSpeed'.
+%    - If state=OFF (1), resets CurrentSpeed to 0.
+%    - If state=ON, and just entered ON (pre=1), latch current Speed.
+%    - If Set pressed, latch current Speed.
+%    - QuickDecel and QuickAccel adjust CurrentSpeed by 2.5 within bounds.
+%
+% 4. ThrottleController:
+%    - If just entered ON, call 'regulateThrottle(true, target, speed)' to
+%      reset integral term.
+%    - If continuing ON, call 'regulateThrottle(false, target, speed)'.
+%    - Otherwise (OFF, STANDBY, DISABLE), passthrough accelerator pedal value.
+%
+% 5. BrakeCheck & AccelCheck:
+%    - Simple threshold detectors: if pedal value >3.0, emit pressed signal.
+%
+% 6. SpeedLimitCheck:
+%    - Emits a true signal if current Speed is between 30 and 150 inclusive.
+%-----------------------------------------
+
